@@ -231,9 +231,10 @@ namespace revit_mcp_plugin.Chat
         {
             if (busy || launch == null || string.IsNullOrWhiteSpace(input.Text)) return;
             if (string.IsNullOrWhiteSpace(SelectedModel)) { status.Text = "請先連線並選擇模型。"; return; }
-            // 面板開著就應該有服務；若尚未啟動先自動啟動一次
-            if (!SocketService.Instance.IsRunning && SocketService.Instance.IsInitialized) SocketService.Instance.Start();
-            if (!SocketService.Instance.IsRunning) { status.Text = "Revit MCP 服務無法啟動：可能是埠號 8080 被其他程式（或另一個 Revit）佔用，請查看 Logs；Revit 剛啟動時請等載入完成再試。"; return; }
+            // 面板開著就應該有 AI助手專用的連線；若尚未啟動先自動啟動一次（埠號由系統指定，不會與其他 Revit 衝突）
+            var service = SocketService.Instance;
+            if (!service.Internal.IsRunning && service.IsInitialized) revit_mcp_plugin.ExternalAi.McpServiceController.SetPaneShown(true);
+            if (!service.Internal.IsRunning) { status.Text = "AI助手的 Revit 連線無法啟動，請查看 Logs；Revit 剛啟動時請等載入完成再試。"; return; }
             var text = input.Text.Trim();
             SetBusy(true);
             try

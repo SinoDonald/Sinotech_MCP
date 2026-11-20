@@ -76,7 +76,7 @@
 
         <ItemGroup>
             <CommandSetBinaries Include="$(TargetDir)*.dll;$(TargetDir)*.pdb" />
-            <CommandJsonFile Include="$(ProjectDir)..\..\command.json" />
+            <CommandJsonFile Include="$(ProjectDir)command.json" />
         </ItemGroup>
 
         <!-- Always: Copy to plugin's AddIn output for release packaging -->

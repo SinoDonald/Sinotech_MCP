@@ -32,6 +32,11 @@
       "commandName": "create_walls_from_cad",
       "description": "自動建牆：依 CAD 建牆（門、窗、柱、樓板須明確要求才一併建立）",
       "assemblyPath": "SinotechExtensions.dll"
+    },
+    {
+      "commandName": "auto_join_elements",
+      "description": "自動接合：接合或取消接合柱、梁、牆、板（每組獨立交易，失敗只復原該組）",
+      "assemblyPath": "SinotechExtensions.dll"
     }
   ]
 }

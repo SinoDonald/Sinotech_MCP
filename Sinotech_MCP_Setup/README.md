@@ -20,7 +20,12 @@ cd C:\Prj\Revit\Sinotech_MCP
 | `Set-MsiRegistration.ps1` | 設定目前使用者安裝、可在 Windows「已安裝的應用程式」解除安裝 |
 | `Verify-Msi.ps1` | 唯讀檢查 MSI 屬性、路徑、內嵌 CAB 全部檔案 SHA-256 |
 
-`payloads/`、`generated/`、`registration/`、`Release/` 是產生物，不進版本控制。
+`payloads/`、`generated/`、`registration/`、`Release/` 是產生物，不進版本控制。為減少容量，每個年份的 MSI 驗證通過後會自動：
+
+- 刪除 `Release/` 中同年份被取代的舊版 MSI（其他年份不動）；
+- 刪除 `generated/qa` 解開的 MSI 內容，以及 `payloads/<年份>`、`generated/<年份>` 打包暫存（加 `-KeepStaging` 可保留供檢查）。
+
+驗證失敗時暫存會保留，方便查原因。安裝專案只產生在 `generated/<年份>`，由 `Setup.Template.vdproj` 產生，不再另外維護根目錄的 `Sinotech_MCP_Setup.vdproj`。
 
 ## 安裝與路徑
 
@@ -56,5 +61,5 @@ cd C:\Prj\Revit\Sinotech_MCP
 ## 注意
 
 - 開發時用 `Debug R2x` 組態建置，或執行 `scripts/build.ps1 -Install`，會把 `Sinotech_MCP.addin` 與 `revit_mcp_plugin\` 複製到 `Addins\<年份>`。這個 `.addin` 與 MSI 安裝的檔案同名、ClientId 也相同，**同一年份不要兩種方式混用**；改用 MSI 前，請先刪除開發版的 `Addins\<年份>\Sinotech_MCP.addin` 與 `revit_mcp_plugin\`。
-- 功能區只有「AI助手」一個按鈕。Revit 啟動時會載入所有已安裝命令集的全部命令（新版本增加的命令也會自動載入，沒有停用選項）；MCP 服務只在 AI助手面板開啟時執行，關閉面板即停止，且只接受本機（127.0.0.1:8080）連線。
+- 功能區有「AI助手」「外部AI服務」「外部設定」三個按鈕。Revit 啟動時會載入所有已安裝命令集的全部命令（新版本增加的命令也會自動載入，沒有停用選項）；AI助手（動態埠號）與外部AI服務（20800＋年份，例如 2025＝20825）是兩個獨立連線，各自開關、各自權杖，只接受本機（127.0.0.1）連線；權杖存在 `%LOCALAPPDATA%\Sinotech`，不在安裝檔內。「外部設定」寫入的 Codex／Claude 設定檔不在安裝目錄內，解除安裝不會移除；不再使用時請先在「外部設定」按「移除設定」。
 - 已通過 MSI 內容驗證，但尚未在實際 Revit 中驗證安裝結果；每個年份都需要開啟 Revit 確認功能區與 AI助手 面板。

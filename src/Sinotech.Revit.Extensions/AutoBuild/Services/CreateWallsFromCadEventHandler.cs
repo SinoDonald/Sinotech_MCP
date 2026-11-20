@@ -155,22 +155,28 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
                 .GroupBy(l => l.Elevation).Select(g => g.First()).ToList() : new List<Level> { bottom, top };
             stories[0] = bottom; stories[stories.Count - 1] = top;
 
-            using (var transaction = new Transaction(doc, "自動建牆" + (placeDoors ? "、門" : "") + (placeWindows ? "、窗" : "") + (Info.PlaceColumns ? "、柱" : "") + (Info.PlaceFloors ? "、樓板" : "")))
+            // 指定柱類型時先確認類型存在，找不到就在建模前回報，不建任何元素
+            var columnChoice = columns.Count > 0 ? ColumnTypeChoice.From(doc, Info.ColumnTypeId, Info.ColumnTypeName, Info.MatchCadSize) : null;
+            var created = new List<Wall>();
+            var createdIds = new HashSet<long>();
+            using (var transaction = new Transaction(doc, "自動建牆" + (placeDoors ? "、門" : "") + (placeWindows ? "、窗" : "") + (Info.PlaceColumns ? "、柱" : "")))
             {
-                // 略過警告（例如牆重疊），避免跳出對話框卡住 MCP 呼叫。
-                var warnings = new WarningSwallower();
-                var failureOptions = transaction.GetFailureHandlingOptions();
-                failureOptions.SetFailuresPreprocessor(warnings);
-                transaction.SetFailureHandlingOptions(failureOptions);
+                // Transaction.Start 會重設失敗處理設定，必須先 Start 再設定：
+                // 刪除警告（避免對話框卡住 MCP 呼叫）；新牆的「無法保持接合」只套用解除接合
+                var guard = new CreationFailureGuard(createdIds);
                 transaction.Start();
-                var created = new List<Wall>();
+                var failureOptions = transaction.GetFailureHandlingOptions();
+                failureOptions.SetFailuresPreprocessor(guard);
+                transaction.SetFailureHandlingOptions(failureOptions);
+                var selector = autoType ? new WallTypeSelector(doc, basicTypes) : null;
                 // 基準樓層的牆與其中心線，門窗放在這些牆上
                 var hosts = new List<Tuple<WallRegionGeometry.Segment, Wall>>();
                 for (int i = 0; i < stories.Count - 1; i++)
                     foreach (var c in centerLines)
                     {
                         var s = c.Item1;
-                        WallType type = fixedType ?? ClosestType(basicTypes, c.Item2);
+                        bool mismatch = false;
+                        WallType type = fixedType ?? selector.For(c.Item2, out mismatch);
                         using (var step = new SubTransaction(doc))
                         {
                             step.Start();
@@ -179,13 +185,17 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
                                 Line axis = Line.CreateBound(new XYZ(s.A.X, s.A.Y, stories[i].Elevation), new XYZ(s.B.X, s.B.Y, stories[i].Elevation));
                                 Wall wall = Wall.Create(doc, axis, type.Id, stories[i].Id,
                                     stories[i + 1].Elevation - stories[i].Elevation, 0, false, false);
+                                // 兩階段：建立時先停用兩端接合，整批牆提交後再逐組接合，避免接合錯誤讓整批建牆回滾
+                                WallUtils.DisallowWallJoinAtEnd(wall, 0);
+                                WallUtils.DisallowWallJoinAtEnd(wall, 1);
                                 wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM).Set(0);
                                 wall.get_Parameter(BuiltInParameter.WALL_HEIGHT_TYPE).Set(stories[i + 1].Id);
                                 step.Commit();
                                 created.Add(wall);
+                                createdIds.Add(wall.Id.ToLong());
                                 if (i == 0) hosts.Add(Tuple.Create(s, wall));
                                 stats.WallTypeCounts[type.Name] = (stats.WallTypeCounts.TryGetValue(type.Name, out int n) ? n : 0) + 1;
-                                if (autoType && (c.Item2 <= 0 || Math.Abs(type.Width - c.Item2) > 10 / 304.8)) stats.ThicknessMismatches++;
+                                if (mismatch) stats.ThicknessMismatches++;
                             }
                             catch (Exception ex)
                             {
@@ -194,6 +204,7 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
                             }
                         }
                     }
+                if (selector != null) stats.CreatedWallTypes.AddRange(selector.CreatedTypes);
                 if (openingList.Count > 0)
                 {
                     doc.Regenerate();
@@ -201,35 +212,44 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
                 }
                 if (columns.Count > 0)
                 {
-                    var placer = new StructurePlacer(doc, stats.StructureNotes);
-                    stats.ColumnsPlaced = placer.PlaceColumns(columns, bottom, top).Count;
+                    var placer = new StructurePlacer(doc, stats.StructureNotes, columnChoice);
+                    var placedColumns = placer.PlaceColumns(columns, bottom, top);
+                    stats.ColumnsPlaced = placedColumns.Count;
                     foreach (var p in placer.TypeCounts) stats.StructureTypeCounts[p.Key] = p.Value;
                     stats.CreatedStructureTypes.AddRange(placer.CreatedTypes);
                     stats.Errors.AddRange(placer.Errors.Take(Math.Max(0, 5 - stats.Errors.Count)));
                     if (placer.Failed > 0) stats.StructureNotes.Add($"柱放置失敗 {placer.Failed} 處。");
                 }
-                if (Info.PlaceFloors && stats.CreatedCount + created.Count > 0)
-                {
-                    var floorType = CadInputs.FloorType(doc, Info.FloorTypeName);
-                    if (floorType == null) stats.StructureNotes.Add("找不到樓板類型，未建立樓板。");
-                    else
-                    {
-                        stats.FloorType = floorType.Name;
-                        var builder = new FloorBuilder();
-                        builder.Build(doc, bottom, floorType, allLines, reader.Bounds);
-                        stats.FloorsCreated = builder.Created;
-                        stats.FloorsSkippedShafts = builder.SkippedShafts;
-                        stats.FloorsSkippedStairs = builder.SkippedStairs;
-                        stats.FloorFailures = builder.Failed;
-                        stats.FloorsSkippedOutside = builder.SkippedOutside;
-                        stats.Errors.AddRange(builder.Errors.Take(Math.Max(0, 5 - stats.Errors.Count)));
-                    }
-                }
                 if (transaction.Commit() != TransactionStatus.Committed)
                     return Fail("建牆交易未成功提交，請檢查 Revit 的錯誤訊息。");
-                stats.SuppressedWarnings = warnings.Count;
+                stats.SuppressedWarnings = guard.Warnings;
+                stats.RecoveredJoinElementIds = guard.Detached;
                 stats.WallIds = created.Where(w => w.IsValidObject).Select(w => w.Id.ToLong()).ToList();
                 stats.CreatedCount = stats.WallIds.Count;
+            }
+
+            // 牆已提交（一筆 Undo）；之後的接合在另一個交易群組（另一筆 Undo），失敗只復原該組，不影響已建立的牆
+            try
+            {
+                var walls = created.Where(w => w.IsValidObject).ToList();
+                if (Info.AutoJoin && walls.Count > 1)
+                {
+                    var joiner = new ElementJoiner(doc, 5 / 304.8);
+                    using (var group = new TransactionGroup(doc, "自動接合牆"))
+                    {
+                        group.Start();
+                        joiner.JoinWalls(walls, 4000);
+                        group.Assimilate();
+                    }
+                    stats.AutoJoin = joiner.Report;
+                }
+                stats.JoinsDeferred = !Info.AutoJoin || (stats.AutoJoin != null && (stats.AutoJoin.FailedPairs > 0 || stats.AutoJoin.Notes.Count > 0));
+                // 樓板依牆柱圍出的房間，牆接合後再建
+                if (Info.PlaceFloors && stats.CreatedCount > 0) BuildFloors(doc, bottom, allLines, reader.Bounds, stats);
+            }
+            catch (Exception ex)
+            {
+                stats.PostProcessingError = ex.Message;
             }
 
             string message = $"已生成 {stats.CreatedCount} 道牆（{bottom.Name} → {top.Name}；" +
@@ -263,8 +283,14 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
             if (stats.StructureTypeCounts.Count > 0) message += "\n柱類型：" + string.Join("、", stats.StructureTypeCounts.Select(p => $"{p.Key} {p.Value}"));
             if (stats.CreatedStructureTypes.Count > 0) message += "\n新建類型：" + string.Join("、", stats.CreatedStructureTypes);
             foreach (var note in stats.StructureNotes) message += "\n" + note;
+            if (stats.CreatedWallTypes.Count > 0) message += "\n依 CAD 牆厚新建牆類型：" + string.Join("、", stats.CreatedWallTypes);
             if (stats.ThicknessMismatches > 0)
-                message += $"\n有 {stats.ThicknessMismatches} 道牆找不到厚度相符（±10 mm）的牆類型，已使用最接近的類型，請檢查。";
+                message += $"\n有 {stats.ThicknessMismatches} 道牆找不到厚度相符（±1 mm）且可安全複製的單層牆類型，已使用最接近的類型，請檢查。";
+            if (stats.RecoveredJoinElementIds.Count > 0)
+                message += $"\n「無法保持接合」已對新牆解除接合 {stats.RecoveredJoinElementIds.Count} 組（接角可能有接縫，請檢查）。";
+            message += "\n" + JoinSummary(stats);
+            if (stats.PostProcessingError != null)
+                message += "\n牆已建立並提交，但後續處理中止：" + stats.PostProcessingError + "。請勿重新建立同一批牆。";
             if (missing.Count > 0) message += "\n找不到的圖層：" + string.Join("、", missing);
             return new ExtensionResult<CadWallCreationResult> { Success = stats.CreatedCount > 0, Message = message, Response = stats };
         }
@@ -279,11 +305,43 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
                 .FirstOrDefault(t => t.Name == Info.WallTypeName);
         }
 
-        private static WallType ClosestType(List<WallType> types, double width)
+        private void BuildFloors(Document doc, Level bottom, List<WallRegionGeometry.Segment> allLines, CadLayerReader.Region bounds, CadWallCreationResult stats)
         {
-            // 無法判定牆厚時（0）以 200 mm 一般牆厚為準
-            double target = width > 0 ? width : 200 / 304.8;
-            return types.OrderBy(t => Math.Abs(t.Width - target)).ThenBy(t => t.Name).First();
+            var floorType = CadInputs.FloorType(doc, Info.FloorTypeName);
+            if (floorType == null) { stats.StructureNotes.Add("找不到樓板類型，未建立樓板。"); return; }
+            stats.FloorType = floorType.Name;
+            using (var transaction = new Transaction(doc, "自動建板"))
+            {
+                transaction.Start();
+                WarningSwallower.Attach(transaction, new WarningSwallower());
+                var builder = new FloorBuilder();
+                builder.Build(doc, bottom, floorType, allLines, bounds);
+                stats.FloorsCreated = builder.Created;
+                stats.FloorsSkippedShafts = builder.SkippedShafts;
+                stats.FloorsSkippedStairs = builder.SkippedStairs;
+                stats.FloorFailures = builder.Failed;
+                stats.FloorsSkippedOutside = builder.SkippedOutside;
+                stats.Errors.AddRange(builder.Errors.Take(Math.Max(0, 5 - stats.Errors.Count)));
+                if (transaction.Commit() != TransactionStatus.Committed)
+                {
+                    stats.FloorsCreated = 0;
+                    stats.StructureNotes.Add("建板交易未成功提交，未建立樓板（牆已保留）。");
+                }
+            }
+        }
+
+        private string JoinSummary(CadWallCreationResult s)
+        {
+            if (!Info.AutoJoin) return "牆接合：依要求未接合（兩端停用接合），之後可用 auto_join_elements 接合這些牆。";
+            if (s.AutoJoin == null) return "牆接合：沒有需要接合的牆。";
+            var r = s.AutoJoin;
+            string text = $"牆接合：牆端接合 {r.WallEndJoinedPairs} 組、幾何接合 {r.GeometryJoinedPairs} 組、失敗 {r.FailedPairs} 組" +
+                (r.EndsKeptDisallowed > 0 ? $"；{r.EndsKeptDisallowed} 個牆端鄰近其他既有牆，保留不接合" : "");
+            foreach (var note in r.Notes) text += "\n" + note;
+            foreach (var issue in r.Issues.Take(5))
+                text += $"\n  {issue.Stage}失敗：元素 {string.Join("、", issue.ElementIds)}" +
+                    (issue.LocationMm == null ? "" : $"（約 X={issue.LocationMm[0]}, Y={issue.LocationMm[1]} mm）") + "：" + issue.Reason;
+            return text;
         }
 
         private static string Summary(CadWallCreationResult s)
@@ -296,22 +354,6 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
         private static ExtensionResult<CadWallCreationResult> Fail(string message)
         {
             return new ExtensionResult<CadWallCreationResult> { Success = false, Message = message };
-        }
-
-        private class WarningSwallower : IFailuresPreprocessor
-        {
-            public int Count;
-
-            public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
-            {
-                foreach (var failure in failuresAccessor.GetFailureMessages())
-                {
-                    if (failure.GetSeverity() != FailureSeverity.Warning) continue;
-                    failuresAccessor.DeleteWarning(failure);
-                    Count++;
-                }
-                return FailureProcessingResult.Continue;
-            }
         }
 
         public bool WaitForCompletion(int timeoutMilliseconds = 10000)

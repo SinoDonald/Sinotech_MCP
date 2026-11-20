@@ -20,7 +20,7 @@ export function registerCreateBeamsFromCadTool(server: McpServer) {
         "沒有標註的梁沿用同一直線上的標註，仍無則梁深 = 梁寬 × defaultDepthRatio。鋼梁需專案中已有相同斷面的結構構架類型，否則略過並回報。" +
         "預設只建梁；使用者明確要求一起建柱時才設 placeColumns（下一層到此樓層）。一張 DWG 有多個樓層平面時，只處理目前視圖「裁剪範圍」內的圖形，" +
         "結果中若處理到多層平面，請提醒使用者把視圖裁剪到要建的那一層。先呼叫 get_cad_layers：beamLikeName 為 true 且有雙線（pairedRatio）的圖層是梁圖層，" +
-        "由你判定即可，與自動判定相同時可省略 layers。直接執行，不要詢問使用者；執行結果請如實轉告使用者。",
+        "由你判定即可，與自動判定相同時可省略 layers。一併建柱且使用者指定柱類型時才填 columnTypeId／columnTypeName。直接執行，不要詢問使用者；執行結果請如實轉告使用者。",
       inputSchema: {
         layers: z
           .array(z.string())
@@ -33,6 +33,9 @@ export function registerCreateBeamsFromCadTool(server: McpServer) {
           .describe("沒有標註的梁：梁深 = 梁寬 × 此倍數（預設 1.4，四捨五入到 5 cm）"),
         placeColumns: z.boolean().default(false).describe("使用者明確要求一起建柱時才設 true（預設 false）"),
         columnLayers: z.array(z.string()).optional().describe("柱的 CAD 圖層；省略則自動判定"),
+        columnTypeId: z.number().optional().describe("使用者指定的結構柱類型 ElementId（取自 get_cad_layers 的 columnTypes）；與 columnTypeName 擇一，未指定時省略（自動選型）"),
+        columnTypeName: z.string().optional().describe("使用者指定的結構柱類型名稱（類型名稱或「族群：類型」）；名稱對應多個類型時會回報可選清單，請改用 columnTypeId"),
+        matchCadSize: z.boolean().default(true).describe("指定柱類型時：true（預設）依 CAD 尺寸選用或複製同族群類型；使用者要求全部用同一類型、不依 CAD 尺寸時才設 false"),
         importIds: z
           .array(z.number())
           .optional()
@@ -47,6 +50,9 @@ export function registerCreateBeamsFromCadTool(server: McpServer) {
         defaultDepthRatio: args.defaultDepthRatio ?? 1.4,
         placeColumns: args.placeColumns ?? false,
         columnLayers: args.columnLayers ?? [],
+        columnTypeId: args.columnTypeId,
+        columnTypeName: args.columnTypeName,
+        matchCadSize: args.matchCadSize ?? true,
         importIds: args.importIds ?? [],
       };
 

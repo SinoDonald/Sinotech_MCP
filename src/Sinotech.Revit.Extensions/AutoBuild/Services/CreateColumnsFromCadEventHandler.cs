@@ -70,12 +70,15 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
                     Response = stats
                 };
 
+            var choice = ColumnTypeChoice.From(doc, Info.ColumnTypeId, Info.ColumnTypeName, Info.MatchCadSize);
             using (var transaction = new Transaction(doc, "自動建柱"))
             {
-                WarningSwallower.Attach(transaction, new WarningSwallower());
                 transaction.Start();
-                var placer = new StructurePlacer(doc, stats.Notes);
-                stats.ColumnsPlaced = placer.PlaceColumns(columns, bottom, top).Count;
+                WarningSwallower.Attach(transaction, new WarningSwallower()); // Start 會重設失敗處理設定，須在 Start 之後設定
+                var placer = new StructurePlacer(doc, stats.Notes, choice);
+                var placed = placer.PlaceColumns(columns, bottom, top);
+                stats.ColumnsPlaced = placed.Count;
+                stats.ElementIds = placed.Select(p => p.Id.ToLong()).ToList();
                 stats.TypeCounts = placer.TypeCounts;
                 stats.CreatedTypes = placer.CreatedTypes;
                 stats.Failed = placer.Failed;

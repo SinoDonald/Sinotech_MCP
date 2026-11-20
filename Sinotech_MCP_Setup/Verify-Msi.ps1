@@ -115,6 +115,8 @@ foreach($year in $RevitVersion){
  if($manifest.RevitAddIns.AddIn.Assembly -ne "..\Sinotech_MCP\$year\RevitMCPPlugin.dll"){throw 'Incorrect relative Assembly path'}
  if($properties.UpgradeCode -eq $lastUpgrade){throw 'Revit versions must have different upgrade identities'}
  $lastUpgrade=$properties.UpgradeCode
+ # 驗證通過後刪除解開的 MSI 內容（每版約 230 MB）；驗證失敗時會在上面 throw，保留供檢查
+ Remove-Item -LiteralPath $qa -Recurse -Force
  [pscustomobject]@{RevitVersion=$year;Msi=$msi;FileCount=$files.Count;Version=$properties.ProductVersion;DisplayName=$properties.ProductName;UninstallEnabled=$true;PerUser=$true;EmbeddedCabinet=$true;PathsVerified=$true;NoSharedToken=$true} | ConvertTo-Json
 }
 

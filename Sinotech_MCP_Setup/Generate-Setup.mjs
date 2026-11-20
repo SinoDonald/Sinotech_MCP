@@ -9,7 +9,6 @@ const year = process.argv[2] || '2025';
 if (!['2024', '2025', '2026'].includes(year)) throw new Error('Release scope is Revit 2024 through 2026.');
 const version = JSON.parse(await fs.readFile(path.join(root, 'server/package.json'), 'utf8')).version;
 const templatePath = path.join(setup, 'Setup.Template.vdproj');
-try { await fs.access(templatePath); } catch { await fs.copyFile(path.join(setup, 'Sinotech_MCP_Setup.vdproj'), templatePath); }
 const template = (await fs.readFile(templatePath, 'utf8')).replace(/^\uFEFF/, '').replaceAll('\r\n', '\n');
 // The product prefix keeps every derived GUID (UpgradeCode, ProductCode, ...) distinct
 // from TYBIM_MCP, whose generator hashes the same keys. A shared UpgradeCode would make
@@ -66,7 +65,7 @@ function fileEntry(source, targetFolder, projectDir) {
   lines.push('            }');
   return { id, text: lines.join('\n') };
 }
-for (const projectDir of [path.join(setup, 'generated', year), ...(year === '2025' ? [setup] : [])]) {
+for (const projectDir of [path.join(setup, 'generated', year)]) {
   await fs.mkdir(projectDir, { recursive: true });
   const projectName = projectDir === setup ? 'Sinotech_MCP_Setup' : 'Sinotech_MCP_' + year;
   let text = template;

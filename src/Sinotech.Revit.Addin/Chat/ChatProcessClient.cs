@@ -29,6 +29,8 @@ namespace revit_mcp_plugin.Chat
                 WorkingDirectory = settings.StateDirectory
             };
             info.EnvironmentVariables["SINOTECH_CHAT_STATE"] = settings.StateDirectory;
+            // AI助手專用連線（本 Revit 程序的動態埠號與權杖）；MCP 程式每次連線時讀取，埠號變更也不需重啟背景程式
+            info.EnvironmentVariables["SINOTECH_MCP_CONFIG"] = revit_mcp_plugin.ExternalAi.McpEndpoints.InternalSessionPath;
             process = new Process { StartInfo = info, EnableRaisingEvents = true };
             process.Exited += (_, __) => Fail(new InvalidOperationException("AI 背景程序已結束，請重新連線。"));
             process.OutputDataReceived += (_, args) =>

@@ -23,7 +23,7 @@ export function registerGetCadLayersTool(server: McpServer) {
         "圖層名稱常是無意義的編號（例如由 MicroStation 轉出的「圖層 27」），請以 recommendedLayers 為準，不要只看 pairedRatio 自行挑圖層；" +
         "除非使用者指定圖層，呼叫 create_walls_from_cad 時省略 layers（會自動判定並加入門窗開口圖層）。" +
         "使用者另外指定某圖層也要建牆時，layers 填 recommendedLayers 加上該圖層。columnShapes 為封閉小矩形或圓（可能是柱）的數量；beamLikeName 表示名稱像梁圖層（結構平面圖用 create_beams_from_cad）；柱用 create_columns_from_cad、板用 create_floors_from_cad；" +
-        "floorTypes／defaultFloorType 為專案中的樓板類型。向使用者簡短說明你選了哪些圖層與理由。",
+        "floorTypes／defaultFloorType 為專案中的樓板類型；columnTypes 為專案中的結構柱類型（id、族群、類型、b／h mm），使用者指定柱類型時用來找 columnTypeId。向使用者簡短說明你選了哪些圖層與理由。",
       inputSchema: {
         importIds: z
           .array(z.number())

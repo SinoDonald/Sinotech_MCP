@@ -1,0 +1,27 @@
+<Project>
+  <!--
+    所有 DLL 的版本統一取自 server/package.json（也是 MSI 的 ProductVersion）。
+    Windows Installer 升級時只會覆寫「檔案版本較新」的 DLL；版本固定不變時會保留舊 DLL，
+    造成安裝新版後 Revit 仍載入舊程式。因此每次升版，DLL 檔案版本必須跟著變。
+  -->
+  <PropertyGroup>
+    <SinotechVersion>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\server\package.json')), '"version"\s*:\s*"(\d+\.\d+\.\d+)"').Groups[1].Value)</SinotechVersion>
+    <Version>$(SinotechVersion)</Version>
+    <AssemblyVersion>$(SinotechVersion).0</AssemblyVersion>
+    <FileVersion>$(SinotechVersion).0</FileVersion>
+  </PropertyGroup>
+
+  <!-- 自行維護 AssemblyInfo.cs 的專案（GenerateAssemblyInfo=false）：另外產生版本屬性 -->
+  <Target Name="SinotechVersionInfo" BeforeTargets="CoreCompile" Condition="'$(GenerateAssemblyInfo)' == 'false'">
+    <Error Condition="'$(SinotechVersion)' == ''" Text="無法從 server/package.json 讀取版本號。" />
+    <PropertyGroup>
+      <SinotechVersionFile>$(IntermediateOutputPath)SinotechVersion.g.cs</SinotechVersionFile>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(SinotechVersionFile)" Overwrite="true" WriteOnlyWhenDifferent="true"
+      Lines="[assembly: System.Reflection.AssemblyVersion(&quot;$(AssemblyVersion)&quot;)];[assembly: System.Reflection.AssemblyFileVersion(&quot;$(FileVersion)&quot;)];[assembly: System.Reflection.AssemblyInformationalVersion(&quot;$(SinotechVersion)&quot;)]" />
+    <ItemGroup>
+      <Compile Include="$(SinotechVersionFile)" />
+      <FileWrites Include="$(SinotechVersionFile)" />
+    </ItemGroup>
+  </Target>
+</Project>

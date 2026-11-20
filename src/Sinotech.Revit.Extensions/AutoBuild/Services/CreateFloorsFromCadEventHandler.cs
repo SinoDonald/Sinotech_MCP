@@ -61,8 +61,8 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
 
             using (var transaction = new Transaction(doc, "自動建板"))
             {
-                WarningSwallower.Attach(transaction, new WarningSwallower());
                 transaction.Start();
+                WarningSwallower.Attach(transaction, new WarningSwallower()); // Start 會重設失敗處理設定，須在 Start 之後設定
                 var builder = new FloorBuilder();
                 builder.Build(doc, level, floorType, CadInputs.LayerLines(reader).Select(l => l.Value).ToList(), reader.Bounds);
                 stats.FloorsCreated = builder.Created;

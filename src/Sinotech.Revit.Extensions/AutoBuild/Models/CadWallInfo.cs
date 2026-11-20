@@ -92,6 +92,20 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Models
         /// 樓板類型名稱；空白時使用專案預設的樓板類型
         /// </summary>
         public string FloorTypeName { get; set; }
+
+        /// <summary>
+        /// 牆提交後自動接合本次新建的牆（預設 true：先試牆端接合，失敗再試幾何接合；失敗只復原該組）。false 時只建不接合
+        /// </summary>
+        public bool AutoJoin { get; set; } = true;
+
+        /// <summary>結構柱類型 ElementId（與 ColumnTypeName 擇一）；省略時自動選型</summary>
+        public long? ColumnTypeId { get; set; }
+
+        /// <summary>結構柱類型名稱（類型名稱或「族群：類型」）</summary>
+        public string ColumnTypeName { get; set; }
+
+        /// <summary>指定柱類型時是否依 CAD 尺寸選用／複製同族群類型（預設 true）；false 時全部使用指定類型</summary>
+        public bool MatchCadSize { get; set; } = true;
     }
 
     /// <summary>
@@ -107,6 +121,11 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Models
         public double DefaultDepthRatio { get; set; } = 1.4;
         /// <summary>一併依 CAD 放置結構柱（下一層到此樓層；預設 false）</summary>
         public bool PlaceColumns { get; set; }
+        /// <summary>結構柱類型 ElementId／名稱（擇一）；省略時自動選型</summary>
+        public long? ColumnTypeId { get; set; }
+        public string ColumnTypeName { get; set; }
+        /// <summary>指定柱類型時是否依 CAD 尺寸選用／複製同族群類型（預設 true）</summary>
+        public bool MatchCadSize { get; set; } = true;
         /// <summary>柱的 CAD 圖層；空白時自動判定</summary>
         public List<string> ColumnLayers { get; set; } = new List<string>();
         /// <summary>只讀取指定的連結 CAD；空白表示目前視圖中全部連結 CAD</summary>
@@ -125,6 +144,11 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Models
         /// <summary>頂部樓層；空白時使用基準樓層的上一層</summary>
         public string TopLevel { get; set; }
         public List<long> ImportIds { get; set; } = new List<long>();
+        /// <summary>結構柱類型 ElementId／名稱（擇一）；省略時自動選型</summary>
+        public long? ColumnTypeId { get; set; }
+        public string ColumnTypeName { get; set; }
+        /// <summary>指定柱類型時是否依 CAD 尺寸選用／複製同族群類型（預設 true）；false 時全部使用指定類型</summary>
+        public bool MatchCadSize { get; set; } = true;
     }
 
     /// <summary>
@@ -158,6 +182,8 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Models
         public Dictionary<string, int> TypeCounts { get; set; } = new Dictionary<string, int>();
         public List<string> CreatedTypes { get; set; } = new List<string>();
         public int Failed { get; set; }
+        /// <summary>新建元素 ID（柱），可交給 auto_join_elements 接合</summary>
+        public List<long> ElementIds { get; set; } = new List<long>();
         public List<string> Notes { get; set; } = new List<string>();
         public List<string> Errors { get; set; } = new List<string>();
     }
@@ -244,6 +270,16 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Models
         public int UnsupportedCurves { get; set; }
         public int Failed { get; set; }
         public int SuppressedWarnings { get; set; }
+        /// <summary>因 CAD 牆厚新建的牆類型</summary>
+        public List<string> CreatedWallTypes { get; set; } = new List<string>();
+        /// <summary>建牆時「無法保持接合」已套用解除接合的新牆 ID 組</summary>
+        public List<List<long>> RecoveredJoinElementIds { get; set; } = new List<List<long>>();
+        /// <summary>牆提交後的自動接合結果（AutoJoin=false 時為 null）</summary>
+        public JoinReport AutoJoin { get; set; }
+        /// <summary>未接合或仍有接合失敗待處理</summary>
+        public bool JoinsDeferred { get; set; }
+        /// <summary>牆已提交後，接合／建板等後續處理意外中止的原因（牆已存在，不可重建同一批牆）</summary>
+        public string PostProcessingError { get; set; }
         public List<string> Errors { get; set; } = new List<string>();
     }
 
@@ -262,6 +298,8 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Models
         public string DefaultFloorType { get; set; }
         /// <summary>依雙線特徵自動判定的牆線圖層（create_walls_from_cad 省略 layers 時使用，另加全部開口圖層）</summary>
         public List<string> RecommendedLayers { get; set; } = new List<string>();
+        /// <summary>專案中的結構柱類型（可傳入 columnTypeId）</summary>
+        public List<CadColumnTypeInfo> ColumnTypes { get; set; } = new List<CadColumnTypeInfo>();
         /// <summary>省略樓層時的預設基準樓層（目前平面視圖的樓層）與頂部樓層（上一層）</summary>
         public string DefaultBaseLevel { get; set; }
         public string DefaultTopLevel { get; set; }
@@ -305,6 +343,17 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Models
         public string Name { get; set; }
         /// <summary>牆厚（mm）</summary>
         public double Width { get; set; }
+    }
+
+    public class CadColumnTypeInfo
+    {
+        public long Id { get; set; }
+        public string Family { get; set; }
+        public string Name { get; set; }
+        /// <summary>寬 b、深 h 或直徑（mm）；族群沒有對應參數時為 null</summary>
+        public double? B { get; set; }
+        public double? H { get; set; }
+        public bool Round { get; set; }
     }
 
     public class CadLevelInfo

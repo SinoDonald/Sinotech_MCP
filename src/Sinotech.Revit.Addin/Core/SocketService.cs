@@ -2,6 +2,7 @@
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using Autodesk.Revit.UI;
@@ -14,254 +15,84 @@ using revit_mcp_plugin.Utils;
 
 namespace revit_mcp_plugin.Core
 {
+    /// <summary>
+    /// MCP 命令主機：載入命令並執行 JSON-RPC 要求。對外提供兩個互相獨立的本機（127.0.0.1）監聽器：
+    /// <list type="bullet">
+    /// <item>Internal：AI助手專用，每次啟動 Revit 向系統取得空閒埠號與新的權杖，只寫入本機工作階段檔交給 AI助手的背景程式</item>
+    /// <item>External：外部 Codex／Claude 專用，固定埠號（預設 20800＋Revit 年份）與保存在本機的權杖，只在「外部AI服務」開啟時監聽</item>
+    /// </list>
+    /// 每個要求都必須帶有該監聽器的權杖，否則拒絕執行。
+    /// </summary>
     public class SocketService
     {
         private static SocketService _instance;
-        private TcpListener _listener;
-        private Thread _listenerThread;
-        private bool _isRunning;
-        private int _port = 8080;
+        private readonly ICommandRegistry _commandRegistry;
+        private readonly ILogger _logger;
         private UIApplication _uiApp;
-        private ICommandRegistry _commandRegistry;
-        private ILogger _logger;
-        private CommandExecutor _commandExecutor;
 
-        public static SocketService Instance
-        {
-            get
-            {
-                if(_instance == null)
-                    _instance = new SocketService();
-                return _instance;
-            }
-        }
+        public static SocketService Instance => _instance ?? (_instance = new SocketService());
 
         private SocketService()
         {
             _commandRegistry = new RevitCommandRegistry();
             _logger = new Logger();
+            Internal = new McpListener("AI助手", this);
+            External = new McpListener("外部AI服務", this);
         }
 
-        public bool IsRunning => _isRunning;
+        /// <summary>AI助手專用監聽器（動態埠號）</summary>
+        public McpListener Internal { get; }
 
-        // 命令只在 Revit 執行期間載入一次；之後開關 AI助手 只會啟動／停止監聽
-        // Commands are loaded once per Revit session; opening/closing the AI assistant only starts/stops listening.
+        /// <summary>外部 AI 用戶端專用監聽器（固定埠號）</summary>
+        public McpListener External { get; }
+
+        // 命令只在 Revit 執行期間載入一次；之後開關 AI助手／外部AI服務只會啟動／停止監聽
+        // Commands are loaded once per Revit session; the listeners only start/stop.
         public bool IsInitialized { get; private set; }
 
-        public int Port
-        {
-            get => _port;
-            set => _port = value;
-        }
+        internal ILogger Logger => _logger;
 
-        // 初始化
-        // Initialization.
         public void Initialize(UIApplication uiApp)
         {
             if (IsInitialized) return;
             _uiApp = uiApp;
-
-            // 初始化事件管理器
-            // Initialize ExternalEventManager
             ExternalEventManager.Instance.Initialize(uiApp, _logger);
-
-            // 记录当前 Revit 版本
-            // Get the current Revit version.
             var versionAdapter = new RevitMCPSDK.API.Utils.RevitVersionAdapter(_uiApp.Application);
-            string currentVersion = versionAdapter.GetRevitVersion();
-            _logger.Info("当前 Revit 版本: {0}\nCurrent Revit version: {0}", currentVersion);
+            _logger.Info("当前 Revit 版本: {0}\nCurrent Revit version: {0}", versionAdapter.GetRevitVersion());
 
-
-
-            // 创建命令执行器
-            // Create CommandExecutor
-            _commandExecutor = new CommandExecutor(_commandRegistry, _logger);
-
-            // 加载配置并注册命令
-            // Load configuration and register commands.
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
-            
-
-            //// 从配置中读取服务端口
-            //// Read the service port from the configuration.
-            //if (configManager.Config.Settings.Port > 0)
-            //{
-            //    _port = configManager.Config.Settings.Port;
-            //}
-            _port = 8080; // 固定端口号 - Hard-wired port number.
-
-            // 加载命令
-            // Load command.
-            CommandManager commandManager = new CommandManager(
-                _commandRegistry, _logger, configManager, _uiApp);
+            CommandManager commandManager = new CommandManager(_commandRegistry, _logger, configManager, _uiApp);
             commandManager.LoadCommands();
 
             IsInitialized = true;
-            _logger.Info($"Socket service initialized on port {_port}");
+            _logger.Info("MCP commands loaded.");
         }
 
-        public void Start()
+        public void StopAll()
         {
-            if (_isRunning) return;
-
-            try
-            {
-                _isRunning = true;
-                // 只接受本機連線（MCP Server 由本機 127.0.0.1 連入），區網其他電腦無法連到 Revit
-                // Loopback only: the MCP server connects from 127.0.0.1; other machines cannot reach Revit.
-                _listener = new TcpListener(IPAddress.Loopback, _port);
-                _listener.Start();
-
-                _listenerThread = new Thread(ListenForClients)
-                {
-                    IsBackground = true
-                };
-                _listenerThread.Start();              
-            }
-            catch (Exception ex)
-            {
-                _isRunning = false;
-                _logger.Error("Socket 服務啟動失敗（埠號 {0} 可能已被其他程式使用）: {1}\nSocket service failed to start on port {0}: {1}", _port, ex.Message);
-            }
+            Internal.Stop();
+            External.Stop();
         }
 
-        public void Stop()
-        {
-            if (!_isRunning) return;
-
-            try
-            {
-                _isRunning = false;
-
-                _listener?.Stop();
-                _listener = null;
-
-                if(_listenerThread!=null && _listenerThread.IsAlive)
-                {
-                    _listenerThread.Join(1000);
-                }
-            }
-            catch (Exception)
-            {
-                // log error
-            }
-        }
-
-        private void ListenForClients()
-        {
-            try
-            {
-                while (_isRunning)
-                {
-                    TcpClient client = _listener.AcceptTcpClient();
-
-                    Thread clientThread = new Thread(HandleClientCommunication)
-                    {
-                        IsBackground = true
-                    };
-                    clientThread.Start(client);
-                }
-            }
-            catch (SocketException)
-            {
-                
-            }
-            catch(Exception)
-            {
-                // log
-            }
-        }
-
-        private void HandleClientCommunication(object clientObj)
-        {
-            TcpClient tcpClient = (TcpClient)clientObj;
-            NetworkStream stream = tcpClient.GetStream();
-
-            try
-            {
-                byte[] buffer = new byte[8192];
-
-                while (_isRunning && tcpClient.Connected)
-                {
-                    // 读取客户端消息
-                    // Read client messages.
-                    int bytesRead = 0;
-
-                    try
-                    {
-                        bytesRead = stream.Read(buffer, 0, buffer.Length);
-                    }
-                    catch (IOException)
-                    {
-                        // 客户端断开连接
-                        // Client disconnected.
-                        break;
-                    }
-
-                    if (bytesRead == 0)
-                    {
-                        // 客户端断开连接
-                        // Client disconnected.
-                        break;
-                    }
-
-                    string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    System.Diagnostics.Trace.WriteLine($"收到消息: {message}\nReceived message: {message}");
-
-                    string response = ProcessJsonRPCRequest(message);
-
-                    // 发送响应
-                    // Send response.
-                    byte[] responseData = Encoding.UTF8.GetBytes(response);
-                    stream.Write(responseData, 0, responseData.Length);
-                }
-            }
-            catch(Exception)
-            {
-                // log
-            }
-            finally
-            {
-                tcpClient.Close();
-            }
-        }
-
-        private string ProcessJsonRPCRequest(string requestJson)
+        /// <summary>處理一筆 JSON-RPC 要求；權杖不符時不執行任何命令</summary>
+        internal string ProcessJsonRPCRequest(string requestJson, string expectedToken)
         {
             JsonRPCRequest request;
-
             try
             {
-                // 解析JSON-RPC请求
-                // Parse JSON-RPC requests.
-                request = JsonConvert.DeserializeObject<JsonRPCRequest>(requestJson);
-
-                // 验证请求格式是否有效
-                // Verify that the request format is valid.
+                var raw = JObject.Parse(requestJson);
+                if (!TokenEquals((string)raw["token"], expectedToken))
+                    return CreateErrorResponse((string)raw["id"], -32001,
+                        "Unauthorized：連線權杖不符。請在 Revit「外部設定」重新套用設定，並重新啟動 AI 程式。");
+                request = raw.ToObject<JsonRPCRequest>();
                 if (request == null || !request.IsValid())
-                {
-                    return CreateErrorResponse(
-                        null,
-                        JsonRPCErrorCodes.InvalidRequest,
-                        "Invalid JSON-RPC request"
-                    );
-                }
-
-                // 查找命令
-                // Search for the command in the registry.
+                    return CreateErrorResponse(null, JsonRPCErrorCodes.InvalidRequest, "Invalid JSON-RPC request");
                 if (!_commandRegistry.TryGetCommand(request.Method, out var command))
-                {
-                    return CreateErrorResponse(request.Id, JsonRPCErrorCodes.MethodNotFound,
-                        $"Method '{request.Method}' not found");
-                }
-
-                // 执行命令
-                // Execute command.
+                    return CreateErrorResponse(request.Id, JsonRPCErrorCodes.MethodNotFound, $"Method '{request.Method}' not found");
                 try
-                {                
+                {
                     object result = command.Execute(request.GetParamsObject(), request.Id);
-
                     return CreateSuccessResponse(request.Id, result);
                 }
                 catch (Exception ex)
@@ -271,51 +102,145 @@ namespace revit_mcp_plugin.Core
             }
             catch (JsonException)
             {
-                // JSON解析错误
-                // JSON parsing error.
-                return CreateErrorResponse(
-                    null,
-                    JsonRPCErrorCodes.ParseError,
-                    "Invalid JSON"
-                );
+                return CreateErrorResponse(null, JsonRPCErrorCodes.ParseError, "Invalid JSON");
             }
             catch (Exception ex)
             {
-                // 处理请求时的其他错误
-                // Catch other errors produced when processing requests.
-                return CreateErrorResponse(
-                    null,
-                    JsonRPCErrorCodes.InternalError,
-                    $"Internal error: {ex.Message}"
-                );
+                return CreateErrorResponse(null, JsonRPCErrorCodes.InternalError, $"Internal error: {ex.Message}");
             }
         }
 
-        private string CreateSuccessResponse(string id, object result)
+        // 固定時間比較，避免以回應時間猜測權杖
+        private static bool TokenEquals(string actual, string expected)
         {
-            var response = new JsonRPCSuccessResponse
-            {
-                Id = id,
-                Result = result is JToken jToken ? jToken : JToken.FromObject(result)
-            };
-
-            return response.ToJson();
+            if (string.IsNullOrEmpty(actual) || string.IsNullOrEmpty(expected)) return false;
+            var a = Encoding.UTF8.GetBytes(actual);
+            var b = Encoding.UTF8.GetBytes(expected);
+            int diff = a.Length ^ b.Length;
+            for (int i = 0; i < Math.Min(a.Length, b.Length); i++) diff |= a[i] ^ b[i];
+            return diff == 0;
         }
 
-        private string CreateErrorResponse(string id, int code, string message, object data = null)
+        internal static string NewToken()
         {
-            var response = new JsonRPCErrorResponse
-            {
-                Id = id,
-                Error = new JsonRPCError
-                {
-                    Code = code,
-                    Message = message,
-                    Data = data != null ? JToken.FromObject(data) : null
-                }
-            };
+            var bytes = new byte[32];
+            using (var random = RandomNumberGenerator.Create()) random.GetBytes(bytes);
+            return Convert.ToBase64String(bytes);
+        }
 
-            return response.ToJson();
+        private static string CreateSuccessResponse(string id, object result)
+        {
+            return new JsonRPCSuccessResponse { Id = id, Result = result is JToken jToken ? jToken : JToken.FromObject(result) }.ToJson();
+        }
+
+        private static string CreateErrorResponse(string id, int code, string message)
+        {
+            return new JsonRPCErrorResponse { Id = id, Error = new JsonRPCError { Code = code, Message = message } }.ToJson();
+        }
+    }
+
+    /// <summary>
+    /// 一個只接受本機連線的 MCP 監聽器（AI助手或外部AI服務各一個，互不影響）
+    /// </summary>
+    public sealed class McpListener
+    {
+        private readonly object _gate = new object();
+        private readonly SocketService _host;
+        private TcpListener _listener;
+        private Thread _thread;
+        private volatile bool _running;
+
+        internal McpListener(string name, SocketService host)
+        {
+            Name = name;
+            _host = host;
+        }
+
+        public string Name { get; }
+        public bool IsRunning => _running;
+        /// <summary>實際監聽中的埠號（未啟動時為上次使用的埠號或 0）</summary>
+        public int Port { get; private set; }
+        public string Token { get; private set; }
+
+        /// <summary>
+        /// 啟動監聽；port=0 表示由系統指定空閒埠號。失敗（埠號被占用等）時丟出例外並維持停止狀態
+        /// </summary>
+        public void Start(int port, string token)
+        {
+            lock (_gate)
+            {
+                if (_running) return;
+                if (string.IsNullOrEmpty(token)) throw new ArgumentException("缺少連線權杖。", nameof(token));
+                var listener = new TcpListener(IPAddress.Loopback, port);
+                try { listener.Start(); }
+                catch (SocketException ex)
+                {
+                    _host.Logger.Error("{0} 無法監聽埠號 {1}: {2}", Name, port, ex.Message);
+                    throw new InvalidOperationException($"本機埠號 {port} 已被其他程式或另一個 Revit 使用。", ex);
+                }
+                _listener = listener;
+                Port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                Token = token;
+                _running = true;
+                _thread = new Thread(Listen) { IsBackground = true, Name = "Sinotech MCP " + Name };
+                _thread.Start();
+                _host.Logger.Info("{0} listening on 127.0.0.1:{1}", Name, Port);
+            }
+        }
+
+        public void Stop()
+        {
+            lock (_gate)
+            {
+                if (!_running) return;
+                _running = false;
+                try { _listener?.Stop(); } catch (SocketException) { }
+                _listener = null;
+                if (_thread != null && _thread.IsAlive && _thread != Thread.CurrentThread) _thread.Join(1000);
+                _thread = null;
+                _host.Logger.Info("{0} stopped", Name);
+            }
+        }
+
+        private void Listen()
+        {
+            var listener = _listener;
+            try
+            {
+                while (_running)
+                {
+                    var client = listener.AcceptTcpClient();
+                    new Thread(Handle) { IsBackground = true }.Start(client);
+                }
+            }
+            catch (SocketException) { }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
+        private void Handle(object state)
+        {
+            var tcpClient = (TcpClient)state;
+            try
+            {
+                var stream = tcpClient.GetStream();
+                var buffer = new byte[8192];
+                while (_running && tcpClient.Connected)
+                {
+                    int bytesRead;
+                    try { bytesRead = stream.Read(buffer, 0, buffer.Length); }
+                    catch (IOException) { break; }
+                    if (bytesRead == 0) break;
+                    string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    // 停止後才收到的要求不執行，避免關閉服務後仍修改模型
+                    string response = _running ? _host.ProcessJsonRPCRequest(message, Token)
+                        : "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32002,\"message\":\"" + Name + "已關閉\"}}";
+                    var data = Encoding.UTF8.GetBytes(response);
+                    stream.Write(data, 0, data.Length);
+                }
+            }
+            catch (Exception) { }
+            finally { tcpClient.Close(); }
         }
     }
 }

@@ -14,7 +14,8 @@
 | 自動建柱 | `create_columns_from_cad` | 只建柱：依柱輪廓建立結構柱，基準樓層到頂部樓層 |
 | 自動建梁 | `create_beams_from_cad` | 只建梁：依梁雙線求中心線，讀取 DWG 尺寸標註；`placeColumns` 可要求一併建下層柱 |
 | 自動建板 | `create_floors_from_cad` | 只建板：依已有的牆柱圍出的房間，每個房間一塊、邊界在牆柱內緣 |
-| 自動建牆 | `create_walls_from_cad` | 預設只建牆；`placeDoors`、`placeWindows`、`placeColumns`、`placeFloors` 明確要求才啟用 |
+| 自動建牆 | `create_walls_from_cad` | 預設只建牆；`placeDoors`、`placeWindows`、`placeColumns`、`placeFloors` 明確要求才啟用；建好後自動接合（`autoJoin`） |
+| 自動接合 | `auto_join_elements` | 接合／取消接合柱、梁、牆、板（指定元素 ID，或目前視圖的主體／目標品類）；執行前在 AI助手確認 |
 
 使用範例（AI助手）：
 
@@ -23,12 +24,48 @@
 3. 「依 CAD 建柱」→ 只建柱。
 4. 「依結構平面圖建梁」→ 只建梁。
 5. 「牆柱建好後建板」→ 每個房間一塊樓板。
+6. 「建牆，先不要接合」→ `autoJoin=false`，只建牆。
+7. 「依 CAD 建柱，柱用 Concrete-Rectangular-Column：600 x 750mm」→ 指定柱類型（`columnTypeId`／`columnTypeName`）。
+8. 「把目前視圖的牆跟柱、板接合，保留樓板原本的切割順序」→ `auto_join_elements`。
 
 共同規則：
 
 - 在 Revit 開啟含有**連結 DWG**的平面視圖（用「連結 CAD」放入，不支援「匯入 CAD」）。
 - **只處理目前視圖裁剪範圍內的 CAD 圖形**；一張 DWG 有多個樓層平面時，請先開啟「裁剪視圖」框到要建的那一層。
-- 未指定時，樓層使用目前平面視圖的樓層與其上一層；牆類型依 CAD 牆厚選用最接近的基本牆類型（相差超過 10 mm 會提醒）。
+- 未指定時，樓層使用目前平面視圖的樓層與其上一層；牆類型依 CAD 牆厚自動選型（見下節）。
+
+### 牆類型自動選型（`WallTypeSelector.cs`）
+
+使用者指定 `wallTypeId`／`wallTypeName` 時全部牆使用該類型；未指定時依 CAD 雙線間距（牆厚）：
+
+1. 優先使用同厚度（±1 mm）的既有基本牆類型（同厚度有多個時，優先專案預設類型、再來單層類型）。
+2. 沒有同厚度類型時，從厚度最接近的**單層、非垂直複合**基本牆複製一個新類型，名稱如「Sinotech CAD 120mm - RC 牆 15cm」，厚度設為 CAD 牆厚，材料與層功能沿用來源；同一次執行相同厚度只複製一次，重複執行沿用同名類型。
+3. 不修改既有類型，也不縮放多層／複合牆。沒有可安全複製的單層類型時才用厚度最接近的類型，並在 `thicknessMismatches` 回報。新建的類型列在 `createdWallTypes`。
+
+選型只依幾何厚度；CAD 沒有材料資訊，複製的類型沿用來源的材料與防火設定，請自行檢查。
+
+### 何時自動接合（`ElementJoiner.cs`）
+
+建牆分兩階段，避免一個接合錯誤讓整批牆回滾：
+
+1. **建立**：每道牆建立後立即停用兩端接合（`DisallowWallJoinAtEnd`），門窗、柱與牆在同一個交易提交（一筆 Undo）。這個交易若出現「無法保持接合」（CannotKeepJoined），只在失敗元素都是本次新建、且 Revit 提供「解除接合」時套用解除接合，同一組只試一次（`recoveredJoinElementIds`）；不刪除、不移動牆，也不動既有元素。
+2. **接合**（`autoJoin`，預設 true）：牆提交後，在另一個交易群組（另一筆 Undo）只處理本次新建的牆：
+   - 候選配對：牆端點距另一道牆中心線在兩牆半厚和＋5 mm 以內，且高度範圍重疊。
+   - 先恢復牆端接合（先整批，失敗再逐端）；牆端若會接到**本次以外的既有牆**，該端保留不接合（`endsKeptDisallowed`），不改動既有模型。
+   - 牆端沒有接上的配對改試幾何接合；仍失敗就只復原該組，牆與其他成功的接合保留，失敗的元素 ID 與座標列在 `autoJoin.issues`。
+3. 要求「先不要接合」時設 `autoJoin=false`，牆兩端保持停用接合（`joinsDeferred=true`），之後可用 `auto_join_elements` 處理。
+4. 一併建板（`placeFloors`）時，樓板在接合後另一個交易建立。
+
+回報 `success` 代表牆已建立，不代表所有接合都成功；請看 `autoJoin` 的 `wallEndJoinedPairs`、`geometryJoinedPairs`、`failedPairs`。`postProcessingError` 表示牆已提交但後續處理中止，不可重新建立同一批牆。
+
+### 自動接合工具（`auto_join_elements`）
+
+- 範圍二擇一，不預設整個模型：`elementIds`（2～500 個）或 `hostCategory`＋`targetCategories`（目前視圖，`columns`、`beams`、`walls`、`floors`，相關元素最多 500 個）。
+- 牆與牆用上面的牆端接合流程；其他配對用幾何接合（`JoinGeometryUtils`）。候選以包圍盒（含 `toleranceMm`，預設 5、最大 50）重疊判斷，不保證實體相交；容差不會移動元素或填補空隙。
+- `action=unjoin` 只取消幾何接合，不停用牆端接合。
+- `floorPriority`：`preserve`（預設，保持既有順序）、`floorCuts`（樓板切割其他元素）、`otherCutsFloor`；檢查目前切割元素後才切換。
+- 每組獨立交易，失敗只復原該組；`maxPairs` 預設 1000、上限 2000，超過時直接拒絕，不先處理一半。全部成功的操作合併為一筆 Undo，不自動儲存。
+- 屬模型修改，AI助手會先顯示參數供確認。
 
 ### 門窗（`OpeningDetector.cs`、`OpeningPlacer.cs`）
 
@@ -49,7 +86,13 @@
 
 - 柱形狀：邊長 20～150 cm 的封閉矩形或圓。
 - 柱圖層自動判定：柱形狀佔該圖層封閉輪廓 60% 以上、最常見尺寸佔 30% 以上，且一半以上貼著牆或梁（依據為模型中已建的牆梁；沒有時用 CAD 牆線；都沒有時只採名稱含 COL／柱 的圖層）。`0`、`DEFPOINTS` 與名稱含門窗、衛浴、標註等字樣的圖層不採用。少量柱或判定不到時，用 `columnLayers` 指定。
-- 結構柱高度為基準樓層到頂部樓層，依矩形方向旋轉；類型選用 b×h 相同者，沒有就複製「寬x深cm」（圓柱「D直徑cm」）。專案中沒有混凝土柱族群時從 Revit 族庫載入，載入不到時回報。
+- 結構柱高度為基準樓層到頂部樓層，依矩形方向旋轉。
+- **柱類型選擇**（`ColumnTypeChoice.cs`、`StructurePlacer.cs`）：
+  - 未指定時自動選型：專案中 b×h（圓柱為直徑）相同（±5 mm）的類型優先，混凝土族群優先；沒有就以同族群複製「寬x深cm」（圓柱「D直徑cm」）。專案中沒有混凝土柱族群時從 Revit 族庫載入，載入不到時回報。
+  - 使用者指定 `columnTypeId` 或 `columnTypeName`（類型名稱或「族群：類型」）時：`matchCadSize=true`（預設）以該類型的族群為準，選尺寸相同的類型，沒有就以指定類型複製出 CAD 尺寸；`matchCadSize=false` 全部柱直接使用指定類型。
+  - 指定的類型找不到，或名稱對應多個類型時，在建模前回報可選清單（`get_cad_layers` 的 `columnTypes` 也會列出），不猜測、不建立任何元素。指定類型若沒有可調整的寬／深（或直徑）參數，直接使用該類型並提醒尺寸可能不同。
+  - 寬、深參數名稱支援 b／B／Width／寬度／柱寬、h／H／Depth／深度／柱深 等。
+- 建柱結果的 `elementIds` 可交給 `auto_join_elements` 與牆、梁、板接合。
 - 結構柱設為房間邊界，建板時才能沿柱與牆圍出房間。
 
 ### 樓板（`FloorBuilder.cs`）
@@ -102,6 +145,9 @@ src/Sinotech.Revit.Extensions/
    ├─ CadLayerReader.cs               讀取連結 CAD 的線條與圖層
    ├─ WallPairBuilder.cs              平行雙線 → 牆中心線（不要求封閉）
    ├─ WallRegionGeometry.cs           封閉雙線區域 → 牆中心線（移植自 TYBIM，開口判斷共用）
+   ├─ WallTypeSelector.cs             依 CAD 牆厚選用／複製牆類型
+   ├─ ElementJoiner.cs                兩階段接合、逐組交易與失敗處理
+   ├─ ColumnTypeChoice.cs             使用者指定的結構柱類型
    ├─ Models/CadWallInfo.cs           參數與回傳資料
    ├─ Commands/                       MCP 命令：解析參數、觸發外部事件
    └─ Services/                       Revit API 實作（在 Revit 主執行緒執行）

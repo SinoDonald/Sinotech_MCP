@@ -51,7 +51,7 @@ export class McpGateway implements ToolGateway {
     // abandoning the call could hide a committed Revit transaction.
     let result: ToolResult;
     try {
-      const response = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 65000 });
+      const response = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 125000 });
       result = { isError: !!response.isError, content: (response.content as any[]).filter(c => c.type === "text" || c.type === "image").map(c => c.type === "text" ? { type: "text", text: c.text } : { type: "image", data: c.data, mimeType: c.mimeType }) };
     } catch (error) { result = textResult(error instanceof Error ? error.message : String(error), true); }
     let data: unknown;

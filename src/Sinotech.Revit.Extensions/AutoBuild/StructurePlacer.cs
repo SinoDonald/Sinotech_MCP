@@ -25,22 +25,51 @@ namespace Sinotech.Revit.Extensions.AutoBuild
         public int Failed { get; private set; }
         public List<string> Errors { get; } = new List<string>();
 
-        public StructurePlacer(Document doc, List<string> notes)
+        private readonly ColumnTypeChoice _columnChoice;
+
+        public StructurePlacer(Document doc, List<string> notes, ColumnTypeChoice columnChoice = null)
         {
-            _doc = doc; _notes = notes;
+            _doc = doc; _notes = notes; _columnChoice = columnChoice;
         }
 
         public List<FamilyInstance> PlaceColumns(IEnumerable<StructureDetector.Column> columns, Level bottom, Level top)
         {
             var placed = new List<FamilyInstance>();
+            var columnList = columns.ToList();
             var symbols = Symbols(BuiltInCategory.OST_StructuralColumns);
-            var rectangular = Family(symbols, BuiltInCategory.OST_StructuralColumns, false, new[] { "*Concrete-Rectangular-Column*.rfa", "*矩形*柱*.rfa" });
-            var round = Family(symbols, BuiltInCategory.OST_StructuralColumns, true, new[] { "*Concrete-Round-Column*.rfa", "*圓形*柱*.rfa" });
-            foreach (var column in columns)
+            List<FamilySymbol> rectangular = null, round = null;
+            var choice = _columnChoice;
+            if (choice != null)
             {
-                var family = column.Round ? round : rectangular;
-                if (family.Count == 0) { Failed++; continue; }
-                var symbol = SymbolFor(family, column.B, column.Round ? column.B : column.H, column.Round ? "D" : "");
+                // 指定類型：同族群的類型為候選，指定類型排第一（複製時以它為來源）
+                var chosenFamily = new List<FamilySymbol> { choice.Symbol };
+                chosenFamily.AddRange(symbols.Where(s => s.Id != choice.Symbol.Id && s.Family.Id == choice.Symbol.Family.Id));
+                if (choice.Round) round = chosenFamily; else rectangular = chosenFamily;
+                string mode = choice.MatchCadSize ? "依 CAD 尺寸選用或複製同族群類型" : "全部使用此類型、不依 CAD 尺寸調整";
+                _notes.Add($"柱使用指定類型「{choice.Symbol.FamilyName}：{choice.Symbol.Name}」（{mode}）。");
+                if (choice.MatchCadSize && columnList.Any(c => c.Round != choice.Round))
+                    _notes.Add(choice.Round ? "指定的是圓柱類型，矩形柱改用自動選型。" : "指定的是矩形柱類型，圓柱改用自動選型。");
+            }
+            if (rectangular == null && columnList.Any(c => !c.Round && (choice == null || choice.MatchCadSize)))
+                rectangular = Family(symbols, BuiltInCategory.OST_StructuralColumns, false, new[] { "*Concrete-Rectangular-Column*.rfa", "*矩形*柱*.rfa" });
+            if (round == null && columnList.Any(c => c.Round && (choice == null || choice.MatchCadSize)))
+                round = Family(symbols, BuiltInCategory.OST_StructuralColumns, true, new[] { "*Concrete-Round-Column*.rfa", "*圓形*柱*.rfa" });
+            foreach (var column in columnList)
+            {
+                FamilySymbol symbol;
+                if (choice != null && !choice.MatchCadSize) symbol = choice.Symbol;
+                else
+                {
+                    var family = (column.Round ? round : rectangular) ?? new List<FamilySymbol>();
+                    if (family.Count == 0) { Failed++; continue; }
+                    try { symbol = SymbolFor(family, column.B, column.Round ? column.B : column.H, column.Round ? "D" : ""); }
+                    catch (Exception ex)
+                    {
+                        Failed++;
+                        if (Errors.Count < 3) Errors.Add("柱類型：" + ex.Message);
+                        continue;
+                    }
+                }
                 using (var step = new SubTransaction(_doc))
                 {
                     step.Start();
@@ -178,6 +207,15 @@ namespace Sinotech.Revit.Extensions.AutoBuild
             var match = family.FirstOrDefault(same);
             if (match != null) return match;
             var basis = family[0];
+            bool sizable = round ? (SizeParameter(basis, "b") ?? SizeParameter(basis, "d")) != null
+                : SizeParameter(basis, "b") != null && SizeParameter(basis, "h") != null;
+            if (!sizable)
+            {
+                // 指定的類型沒有可調整的尺寸參數：直接使用，不複製
+                string note = $"「{basis.FamilyName}：{basis.Name}」沒有可調整的寬度／深度（或直徑）類型參數，柱直接使用此類型，尺寸可能與 CAD 不同。";
+                if (!_notes.Contains(note)) _notes.Add(note);
+                return basis;
+            }
             string name = round ? $"D{Math.Round(b * 30.48)}cm" : $"{Math.Round(b * 30.48)}x{Math.Round(h * 30.48)}cm";
             var existing = basis.Family.GetFamilySymbolIds().Select(id => _doc.GetElement(id)).OfType<FamilySymbol>().FirstOrDefault(s => s.Name == name);
             if (existing != null) return existing;
@@ -192,7 +230,9 @@ namespace Sinotech.Revit.Extensions.AutoBuild
         // 族群的尺寸參數：b／h（Revit 混凝土族群），或寬度／深度／直徑等別名
         private static Parameter SizeParameter(FamilySymbol symbol, string name)
         {
-            string[] names = name == "b" ? new[] { "b", "Width", "寬度", "寬" } : name == "h" ? new[] { "h", "Depth", "深度", "深", "高度" } : new[] { "d", "Diameter", "直徑" };
+            string[] names = name == "b" ? new[] { "b", "B", "Width", "寬度", "寬", "柱寬", "梁寬", "樑寬" }
+                : name == "h" ? new[] { "h", "H", "Depth", "深度", "深", "柱深", "梁深", "樑深", "高度" }
+                : new[] { "d", "D", "Diameter", "直徑" };
             foreach (var n in names)
             {
                 var p = symbol.LookupParameter(n);

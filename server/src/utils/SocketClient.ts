@@ -3,13 +3,15 @@ import * as net from "net";
 export class RevitClientConnection {
   host: string;
   port: number;
+  token: string;
   socket: net.Socket;
   isConnected: boolean = false;
   responseCallbacks: Map<string, (response: string) => void> = new Map();
   buffer: string = "";
 
-  constructor(host: string, port: number) {
+  constructor(host: string, port: number, token = "") {
     this.host = host;
+    this.token = token;
     this.port = port;
     this.socket = new net.Socket();
     this.setupSocketListeners();
@@ -106,6 +108,7 @@ export class RevitClientConnection {
           method: command,
           params: params,
           id: requestId,
+          token: this.token, // Revit 端驗證的連線權杖（AI助手與外部AI服務各自不同）
         };
 
         // 存储回调函数

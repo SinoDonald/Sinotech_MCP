@@ -80,6 +80,11 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
                     Levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.Elevation)
                         .Select(l => new CadLevelInfo { Id = l.Id.ToLong(), Name = l.Name, Elevation = Math.Round(l.Elevation * 304.8, 1) })
                         .ToList(),
+                    ColumnTypes = ColumnTypeChoice.Loaded(doc).Select(s => new CadColumnTypeInfo
+                    {
+                        Id = s.Id.ToLong(), Family = s.FamilyName, Name = s.Name, Round = ColumnTypeChoice.IsRound(s),
+                        B = Size(s, "b", "B", "Width", "寬度", "d", "D", "Diameter", "直徑"), H = Size(s, "h", "H", "Depth", "深度")
+                    }).ToList(),
                     RecommendedLayers = analysis.Values.Where(a => a.Recommended).Select(a => a.Layer).OrderBy(l => l).ToList(),
                     DefaultBaseLevel = defaultBase?.Name,
                     DefaultTopLevel = defaultTop?.Name
@@ -106,6 +111,16 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
             {
                 _resetEvent.Set();
             }
+        }
+
+        private static double? Size(FamilySymbol symbol, params string[] names)
+        {
+            foreach (var name in names)
+            {
+                var p = symbol.LookupParameter(name);
+                if (p != null && p.StorageType == StorageType.Double && p.HasValue) return Math.Round(p.AsDouble() * 304.8, 1);
+            }
+            return null;
         }
 
         public bool WaitForCompletion(int timeoutMilliseconds = 10000)

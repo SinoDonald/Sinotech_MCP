@@ -24,6 +24,10 @@ export function registerCreateWallsFromCadTool(server: McpServer) {
         "使用者明確要求門才設 placeDoors（有開門弧線為門、兩個半寬弧線為雙開門、牆面外有門片線為推拉門，並依 CAD 調整開門方向）；" +
         "明確要求窗才設 placeWindows（牆厚內有平行線為窗）；只要求其中一種時不可順便放另一種。門窗使用寬度最接近的類型，必要時複製等寬類型，無法判斷的缺口只回報。" +
         "明確要求一起建柱、板時才設 placeColumns、placeFloors（單獨建柱、建板請用 create_columns_from_cad、create_floors_from_cad）。" +
+        "牆類型省略時依 CAD 牆厚自動選型：優先用同厚度（±1 mm）的既有基本牆，沒有就從厚度最接近的單層牆複製一個 CAD 厚度的新類型（不修改既有類型）。" +
+        "建牆分兩階段：建立時先停用牆端接合並提交整批牆，再自動接合（autoJoin 預設 true：先試牆端接合，失敗再試幾何接合；失敗只復原該組，牆保留）；" +
+        "status 成功代表牆已建立，不代表所有接合都成功，請轉告 autoJoin 的接合／失敗數與問題元素 ID。後處理中止（postProcessingError）時牆已存在，不可重新建立同一批牆。" +
+        "使用者指定柱類型時才填 columnTypeId／columnTypeName（未指定時自動選型：尺寸相同的類型，沒有就複製）。" +
         "直接執行，不要詢問使用者。" +
         "所有長度單位為公釐（mm）。執行結果會回報使用的圖層、各牆類型數量、厚度不符的牆數、（有要求時）門窗柱板數量與略過的線段統計，請如實轉告使用者。",
       inputSchema: {
@@ -64,6 +68,10 @@ export function registerCreateWallsFromCadTool(server: McpServer) {
           .array(z.string())
           .optional()
           .describe("柱的 CAD 圖層（get_cad_layers 中 columnShapes 多的圖層）；省略則自動判定"),
+        autoJoin: z.boolean().default(true).describe("牆建立並提交後自動接合本次新建的牆（預設 true）；使用者要求「先不要接合／只建不接合」時才設 false"),
+        columnTypeId: z.number().optional().describe("使用者指定的結構柱類型 ElementId（取自 get_cad_layers 的 columnTypes）；與 columnTypeName 擇一，未指定時省略（自動選型）"),
+        columnTypeName: z.string().optional().describe("使用者指定的結構柱類型名稱（類型名稱或「族群：類型」）；名稱對應多個類型時會回報可選清單，請改用 columnTypeId"),
+        matchCadSize: z.boolean().default(true).describe("指定柱類型時：true（預設）依 CAD 尺寸選用或複製同族群類型；使用者要求全部用同一類型、不依 CAD 尺寸時才設 false"),
         placeFloors: z.boolean().default(false).describe("使用者明確要求一起建板時才設 true（預設 false）；每個房間一塊、邊界在牆柱內緣"),
         floorTypeName: z.string().optional().describe("樓板類型名稱（取自 get_cad_layers 的 floorTypes）；省略則使用專案預設樓板類型"),
         importIds: z
@@ -89,6 +97,10 @@ export function registerCreateWallsFromCadTool(server: McpServer) {
         windowSillHeight: args.windowSillHeight,
         placeColumns: args.placeColumns ?? false,
         columnLayers: args.columnLayers ?? [],
+        autoJoin: args.autoJoin ?? true,
+        columnTypeId: args.columnTypeId,
+        columnTypeName: args.columnTypeName,
+        matchCadSize: args.matchCadSize ?? true,
         placeFloors: args.placeFloors ?? false,
         floorTypeName: args.floorTypeName,
       };

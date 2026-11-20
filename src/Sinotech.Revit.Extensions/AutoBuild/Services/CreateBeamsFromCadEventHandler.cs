@@ -102,13 +102,15 @@ namespace Sinotech.Revit.Extensions.AutoBuild.Services
             }
             else if (Info.PlaceColumns) stats.Notes.Add("梁所在樓層下方沒有樓層，未放置柱。");
 
+            var choice = columns.Count > 0 ? ColumnTypeChoice.From(doc, Info.ColumnTypeId, Info.ColumnTypeName, Info.MatchCadSize) : null;
             using (var transaction = new Transaction(doc, columns.Count > 0 ? "自動建梁、柱" : "自動建梁"))
             {
+                transaction.Start();
+                // Start 會重設失敗處理設定，須在 Start 之後設定
                 var failureOptions = transaction.GetFailureHandlingOptions();
                 failureOptions.SetFailuresPreprocessor(new WarningSwallower());
                 transaction.SetFailureHandlingOptions(failureOptions);
-                transaction.Start();
-                var placer = new StructurePlacer(doc, stats.Notes);
+                var placer = new StructurePlacer(doc, stats.Notes, choice);
                 stats.BeamsPlaced = placer.PlaceBeams(beams, level, Info.DefaultDepthRatio > 0 ? Info.DefaultDepthRatio : 1.4, out int skippedSteel);
                 stats.SkippedSteel = skippedSteel;
                 if (columns.Count > 0) stats.ColumnsPlaced = placer.PlaceColumns(columns, below, level).Count;

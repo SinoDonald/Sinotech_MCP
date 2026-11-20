@@ -67,6 +67,10 @@
     <ItemGroup>
         <EmbeddedResource Include="..\..\Pic\AI 助手.png" LogicalName="Sinotech.Mcp.Images.AiAssistant.png"/>
         <EmbeddedResource Include="..\..\Pic\原圖\AI 助手(原圖).png" LogicalName="Sinotech.Mcp.Images.AiAssistant.Original.png"/>
+        <EmbeddedResource Include="..\..\Pic\外部AI服務.png" LogicalName="Sinotech.Mcp.Images.ExternalAi.png"/>
+        <EmbeddedResource Include="..\..\Pic\原圖\外部AI服務(原圖).png" LogicalName="Sinotech.Mcp.Images.ExternalAi.Original.png"/>
+        <EmbeddedResource Include="..\..\Pic\外部設定.png" LogicalName="Sinotech.Mcp.Images.ExternalSetup.png"/>
+        <EmbeddedResource Include="..\..\Pic\原圖\外部設定(原圖).png" LogicalName="Sinotech.Mcp.Images.ExternalSetup.Original.png"/>
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="Newtonsoft.Json" Version="13.0.3"/>
